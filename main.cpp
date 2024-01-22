@@ -9,66 +9,47 @@
 const int SCREEN_WIDTH = 950;
 const int SCREEN_HEIGHT = 600;
 
-int HEIGHTMAP_ROWS = 4;
-int HEIGHTMAP_COLS = 4;
+// We store lines as 3x2 matrices (two 3D points)
+typedef Eigen::Matrix<float, 3, 2> Line3f;
 
-typedef struct s_point {
-	float x, y, z;
-} t_point;
-
-typedef std::pair<t_point, t_point> t_line;
-
-// TODO simplify the functions below by writing your own vector math library
-void basis_transform(t_point &point, t_point new_x, t_point new_y, t_point new_z) {
-	auto temp = point;
-	point.x = temp.x * new_x.x + temp.y * new_y.x + temp.z * new_z.x;
-	point.y = temp.x * new_x.y + temp.y * new_y.y + temp.z * new_z.y;
-	point.z = temp.x * new_x.z + temp.z * new_y.z + temp.z * new_z.z;
+void to_pixel_coordinates(std::vector<Line3f> &lines) {
+	float factor = 10.0f;
+	for (Line3f &line : lines)
+		line *= factor;
+	
+	Eigen::Matrix3f transform_mat;
+	transform_mat << 1.0f, 0.0f, 0.0f,
+					0.5f, 0.5f, 0.0f,
+					0.0f, 1.0f, 0.0f;
+	transform_mat.transposeInPlace();
+	
+	for (Line3f &line : lines)
+		line = transform_mat * line;
 }
 
-void basis_transform(t_line &line, t_point new_x, t_point new_y, t_point new_z) {
-	basis_transform(line.first, new_x, new_y, new_z);
-	basis_transform(line.second, new_x, new_y, new_z);
-}
-
-void basis_transform(std::vector<t_line> &lines, t_point new_x, t_point new_y, t_point new_z) {
-	for (t_line &line : lines) {
-		basis_transform(line, new_x, new_y, new_z);
-	}
-}
-
-void point_scale(t_point &point, float factor) {
-	point.x *= factor;
-	point.y *= factor;
-	point.z *= factor;
-}
-
-void lines_scale(std::vector<t_line> &lines, float factor) {
-	for (t_line &line : lines)
-	{
-		point_scale(line.first, factor);
-		point_scale(line.second, factor);
-	}
-	fprintf(stdout, "exiting lines_scale\n");
-}
-
-void lines_from_heightmap(int** heightmap, int width, int height, std::vector<t_line> &lines) {
+void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Line3f> &lines) {
 	for (int i = 0; i < height; i++)
 	{
 		for (int j = 0; j < width; j++)
 		{
 			float z_fact = -10;
 			float z_trans = 16.1f;
-			t_point current = { i, j, z_fact * heightmap[i][j] / 255.0f + z_trans };
+			
+			Eigen::Vector3f current(i, j, z_fact * heightmap[i][j] / 255.0f + z_trans);
+
 			if (i > 0)
 			{
-				t_point up = { i - 1, j, z_fact * heightmap[i - 1][j] / 255.0f + z_trans };
-				lines.push_back(t_line(current, up));
+				Eigen::Vector3f up(i - 1.0f, j, z_fact* heightmap[i - 1][j] / 255.0f + z_trans);
+				Line3f temp;
+				temp << current, up;
+				lines.push_back(temp);
 			}
 			if (j > 0)
 			{
-				t_point left = { i, j - 1, z_fact * heightmap[i][j - 1] / 255.0f + z_trans };
-				lines.push_back(t_line(current, left));
+				Eigen::Vector3f left(i, j - 1.0f, z_fact* heightmap[i][j - 1] / 255.0f + z_trans);
+				Line3f temp;
+				temp << current, left;
+				lines.push_back(temp);
 			}
 
 		}
@@ -78,22 +59,21 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<t_
 void draw_heightmap(SDL_Renderer *renderer, int **heightmap, int width, int height) {
 	// We render with a color of choice at a time		
 	
-	SDL_SetRenderDrawColor(renderer, 0xFF, 0x00, 0x00, 0xFF); // red background
+	SDL_SetRenderDrawColor(renderer, 0x5F, 0x00, 0x00, 0xFF); // red background
 	SDL_RenderClear(renderer);
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BlendMode::SDL_BLENDMODE_ADD);
 
-	SDL_SetRenderDrawColor(renderer, 0x0F, 0xFF, 0xFF, 0x4F);
+	SDL_SetRenderDrawColor(renderer, 0x0F, 0xFF, 0xFF, 0xAF);
 	
-	std::vector<t_line> lines;
+	std::vector<Line3f> lines;
 	lines_from_heightmap(heightmap, width, height, lines);
 	
-	// transform lines so we can visualize them
-	lines_scale(lines, 10);
-	basis_transform(lines, { 1.0f, 0, 0 }, { 0.5f, 0.5f, 0 }, { 0, 1.0f, 0 });
+	// transform lines to pixel coordinates
+	to_pixel_coordinates(lines);
 	
-	for (const t_line &line : lines)
+	for (const Line3f &line : lines)
 	{
-		SDL_RenderDrawLine(renderer, line.first.x, line.first.y, line.second.x, line.second.y);
+		SDL_RenderDrawLine(renderer, line.col(0).x(), line.col(0).y(), line.col(1).x(), line.col(1).y());
 	}
 	// Present the render, otherwise what has been drawn will not be seen
 	SDL_RenderPresent(renderer);
