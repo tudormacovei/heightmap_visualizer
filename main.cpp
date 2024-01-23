@@ -14,20 +14,22 @@ const int SCREEN_HEIGHT = 600;
 // We store lines as 3x2 matrices (two 3D points)
 typedef Eigen::Matrix<float, 3, 2> Line3f;
 
+// view direction of camera
+Eigen::Vector3f camera_position(10.0f, 10.0f, 10.0f);
+
 void to_pixel_coordinates(std::vector<Line3f> &lines) {
 	float scale_factor = 10.0f;
 	for (Line3f& line : lines) {
-		// TODO move this: center the plane on 0
+		// TODO move this
+		// center the plane on 0
 		line.col(0).x() -= 0.5f;
 		line.col(1).x() -= 0.5f;
 		line.col(0).y() -= 0.5f;
 		line.col(1).y() -= 0.5f;
-
-		line *= scale_factor;
 	}
 	
-	Eigen::Vector3f camera_position(10.0f, 0.0f, 1.0f);
-	Eigen::Vector3f camera_look_at(-1.0f, -1.0f, 1.0f);
+	Eigen::Vector3f focus_point(0.0f, 0.0f, 0.0f);
+	Eigen::Vector3f camera_look_at = camera_position - focus_point ;
 	camera_look_at.normalize();
 	
 	Eigen::Vector3f camera_up(0.0f, 0.0f, 1.0f);
@@ -39,10 +41,12 @@ void to_pixel_coordinates(std::vector<Line3f> &lines) {
 	camera_up.normalize();
 
 	Eigen::Matrix3f view_matrix;
+	// these lines build the matrix that transforms from view coords to world coords
 	view_matrix.col(0) << camera_right;
 	view_matrix.col(1) << camera_up;
 	view_matrix.col(2) << camera_look_at;
 
+	// we take the transpose of it to take its inverse
 	view_matrix.transposeInPlace();
 
 	Eigen::Vector3f translation;
@@ -55,7 +59,7 @@ void to_pixel_coordinates(std::vector<Line3f> &lines) {
 		line.col(1) -= camera_position;
 		line = view_matrix * line;
 		
-		float zoom_factor = 30.0f;
+		float zoom_factor = 400.0f;
 		line *= zoom_factor;
 
 		// transform to pixel coordinates here
@@ -111,43 +115,104 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 	}
 }
 
-void set_color_zbuf(Line3f line, SDL_Color& color) {
-	float mini = -350.0f;
-	float maxi = -300.0f;
-	int blue = (std::max(mini, line.col(0).z()) / -400.0f) * 255.0f;
-	int red = (std::min(mini, line.col(0).z()) / mini) * 255.0f;
-	color.a = 0xFF;
-	color.r = blue;
-	color.g = 0x00;
-	color.b = blue;
+// sets color based on z-depth
+void set_color_zbuf(float z_depth, SDL_Color& color) {
+	// the two distances to interpolate between
+	float mini = 17.1f;
+	float maxi = 18.5;
+	int abs_distance = std::min(((std::max(mini, abs(z_depth)) - mini) / (maxi - mini)), 1.0f) * 255.0f;
+	
+	int sign = (z_depth < 0) ? 255.0f : 0.0f;
+	
+	color.a = 255 - abs_distance;
+	color.r = 255 - abs_distance;
+	color.g = 255 - abs_distance;
+	color.b = 255 - abs_distance;
 	
 }
 
-void draw_heightmap(SDL_Renderer *renderer, int **heightmap, int width, int height) {
+// TODO find a more efficient way of doing this than making a copy of the lines data structure
+void draw_heightmap(SDL_Renderer *renderer, std::vector<Line3f> lines) {
 	// We render with a color of choice at a time		
 	
 	SDL_SetRenderDrawColor(renderer, 0x5F, 0x00, 0x00, 0xFF); // red background
 	SDL_RenderClear(renderer);
-	SDL_SetRenderDrawBlendMode(renderer, SDL_BlendMode::SDL_BLENDMODE_ADD);
+	SDL_SetRenderDrawBlendMode(renderer, SDL_BlendMode::SDL_BLENDMODE_BLEND);
 
 	SDL_SetRenderDrawColor(renderer, 0x0F, 0xFF, 0xFF, 0xAF);
-	
-	std::vector<Line3f> lines;
-	lines_from_heightmap(heightmap, width, height, lines);
 	
 	to_pixel_coordinates(lines);
 	
 	for (const Line3f &line : lines)
 	{
 		assert(line.col(0).x() > 0);
+		assert(line.col(0).x() < SCREEN_WIDTH + 1);
 		SDL_Color render_color;
-		set_color_zbuf(line, render_color);
+
+		// divide by the scaling done in to_pixel coords
+		// now the z-coord is in view coordinates (unscaled)
+		set_color_zbuf(line.col(0).z() / 400.0f, render_color);
 		SDL_SetRenderDrawColor(renderer, render_color.r, render_color.g, render_color.b, render_color.a);
 
 		SDL_RenderDrawLine(renderer, line.col(0).x(), SCREEN_HEIGHT - line.col(0).y(), line.col(1).x(), SCREEN_HEIGHT - line.col(1).y());
 	}
 	// Present the render, otherwise what has been drawn will not be seen
 	SDL_RenderPresent(renderer);
+}
+
+void game_loop(SDL_Renderer* renderer, int** heightmap, int width, int height) {
+	bool quit{ false };
+	SDL_Event e;
+
+	// pre-processing (things that will not be updated between rendering frames)
+	std::vector<Line3f> lines;
+	lines_from_heightmap(heightmap, width, height, lines);
+	// draw initial view
+	draw_heightmap(renderer, lines);
+
+	// Handle events on queue
+	while (!quit) {
+		while (SDL_PollEvent(&e) != 0)
+		{
+			// User requests quit
+			if (e.type == SDL_QUIT)
+			{
+				return;
+			}
+			// User presses a key
+			else if (e.type == SDL_KEYDOWN) {
+				// Move camera based on key press,
+				// this assumes we are orbiting around the center
+				Eigen::Vector3f up_down_axis = camera_position.cross(Eigen::Vector3f::UnitZ());
+				up_down_axis.normalize();
+				switch (e.key.keysym.sym)
+				{
+				case SDLK_UP:
+					camera_position = Eigen::AngleAxisf(0.1 * M_PI, up_down_axis) * camera_position;
+					break;
+
+				case SDLK_DOWN:
+					camera_position = Eigen::AngleAxisf(-0.1 * M_PI, up_down_axis) * camera_position;
+					break;
+
+				case SDLK_LEFT:
+					camera_position = Eigen::AngleAxisf(0.1 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
+					break;
+
+				case SDLK_RIGHT:
+					camera_position = Eigen::AngleAxisf(-0.1 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
+					break;
+
+				default:
+					// error if a diff key is pressed to check behaviour
+					assert(false);
+					break;
+				}
+				// only redraw if view changed
+				draw_heightmap(renderer, lines);
+			}
+		}
+	}
 }
 
 // SDL requires specifically this signature for main
@@ -204,15 +269,14 @@ int main(int argc, char* args[])
 		}
 		else
 		{
+			// TODO error handle this maybe
 			SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, 0);
-			
-			draw_heightmap(renderer, pixelValues, width, height);
 
-			// Hack to get window to stay up
-			SDL_Event e; bool quit = false; while (quit == false) { while (SDL_PollEvent(&e)) { if (e.type == SDL_QUIT) quit = true; } }
+			game_loop(renderer, pixelValues, width, height);
 		}
 	}
 
+	// TODO handle the lines below somewhere else
 	// Destroy window
 	SDL_DestroyWindow(window);
 
