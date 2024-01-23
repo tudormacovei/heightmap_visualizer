@@ -4,6 +4,8 @@
 #include <vector>
 #include "lodepng.h"
 #include "Eigen/Core"
+#include "Eigen/Geometry"
+
 
 // Screen dimension constants
 const int SCREEN_WIDTH = 950;
@@ -13,27 +15,72 @@ const int SCREEN_HEIGHT = 600;
 typedef Eigen::Matrix<float, 3, 2> Line3f;
 
 void to_pixel_coordinates(std::vector<Line3f> &lines) {
-	float factor = 10.0f;
-	for (Line3f &line : lines)
-		line *= factor;
+	float scale_factor = 10.0f;
+	for (Line3f& line : lines) {
+		// TODO move this: center the plane on 0
+		line.col(0).x() -= 0.5f;
+		line.col(1).x() -= 0.5f;
+		line.col(0).y() -= 0.5f;
+		line.col(1).y() -= 0.5f;
+
+		line *= scale_factor;
+	}
 	
-	Eigen::Matrix3f transform_mat;
-	transform_mat << 1.0f, 0.0f, 0.0f,
-					0.5f, 0.5f, 0.0f,
-					0.0f, 1.0f, 0.0f;
-	transform_mat.transposeInPlace();
+	Eigen::Vector3f camera_position(10.0f, 0.0f, 1.0f);
+	Eigen::Vector3f camera_look_at(-1.0f, -1.0f, 1.0f);
+	camera_look_at.normalize();
 	
-	for (Line3f &line : lines)
-		line = transform_mat * line;
+	Eigen::Vector3f camera_up(0.0f, 0.0f, 1.0f);
+	
+	Eigen::Vector3f camera_right = camera_up.cross(camera_look_at);
+	camera_right.normalize();
+	
+	camera_up = camera_look_at.cross(camera_right);
+	camera_up.normalize();
+
+	Eigen::Matrix3f view_matrix;
+	view_matrix.col(0) << camera_right;
+	view_matrix.col(1) << camera_up;
+	view_matrix.col(2) << camera_look_at;
+
+	view_matrix.transposeInPlace();
+
+	Eigen::Vector3f translation;
+	translation.x() = camera_position.dot(camera_right);
+	translation.y() = camera_position.dot(camera_up);
+	translation.z() = camera_position.dot(camera_look_at);
+	
+	for (Line3f& line : lines) {
+		line.col(0) -= camera_position;
+		line.col(1) -= camera_position;
+		line = view_matrix * line;
+		
+		float zoom_factor = 30.0f;
+		line *= zoom_factor;
+
+		// transform to pixel coordinates here
+		line.col(0).y() += SCREEN_HEIGHT / 2.0f;
+		line.col(1).y() += SCREEN_HEIGHT / 2.0f;
+
+		line.col(0).x() += SCREEN_WIDTH / 2.0f;
+		line.col(1).x() += SCREEN_WIDTH / 2.0f;
+		
+		// perspective division
+		//if (line.col(0).z() < -1)
+		//	line.col(0) /= abs(line.col(0).z() / 100.0f);
+		//if (line.col(1).z() < -1)
+		//	line.col(1) /= abs(line.col(1).z() / 100.0f);
+	}
 }
 
 void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Line3f> &lines) {
+	// heightmap will displace a unit rectangle with corners at (0,0,0) and (1, 1, 0)
 	for (int i = 0; i < height; i++)
 	{
 		for (int j = 0; j < width; j++)
 		{
-			float z_fact = -10;
-			float z_trans = 16.1f;
+			float z_fact = 0.2f;
+			float z_trans = 0.0f;
 			
 			Eigen::Vector3f current(i, j, z_fact * heightmap[i][j] / 255.0f + z_trans);
 
@@ -42,6 +89,10 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 				Eigen::Vector3f up(i - 1.0f, j, z_fact* heightmap[i - 1][j] / 255.0f + z_trans);
 				Line3f temp;
 				temp << current, up;
+				temp.col(0).x() /= height;
+				temp.col(1).x() /= height;
+				temp.col(0).y() /= width;
+				temp.col(1).y() /= width;
 				lines.push_back(temp);
 			}
 			if (j > 0)
@@ -49,11 +100,27 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 				Eigen::Vector3f left(i, j - 1.0f, z_fact* heightmap[i][j - 1] / 255.0f + z_trans);
 				Line3f temp;
 				temp << current, left;
+				temp.col(0).x() /= height;
+				temp.col(1).x() /= height;
+				temp.col(0).y() /= width;
+				temp.col(1).y() /= width;
 				lines.push_back(temp);
 			}
 
 		}
 	}
+}
+
+void set_color_zbuf(Line3f line, SDL_Color& color) {
+	float mini = -350.0f;
+	float maxi = -300.0f;
+	int blue = (std::max(mini, line.col(0).z()) / -400.0f) * 255.0f;
+	int red = (std::min(mini, line.col(0).z()) / mini) * 255.0f;
+	color.a = 0xFF;
+	color.r = blue;
+	color.g = 0x00;
+	color.b = blue;
+	
 }
 
 void draw_heightmap(SDL_Renderer *renderer, int **heightmap, int width, int height) {
@@ -68,12 +135,16 @@ void draw_heightmap(SDL_Renderer *renderer, int **heightmap, int width, int heig
 	std::vector<Line3f> lines;
 	lines_from_heightmap(heightmap, width, height, lines);
 	
-	// transform lines to pixel coordinates
 	to_pixel_coordinates(lines);
 	
 	for (const Line3f &line : lines)
 	{
-		SDL_RenderDrawLine(renderer, line.col(0).x(), line.col(0).y(), line.col(1).x(), line.col(1).y());
+		assert(line.col(0).x() > 0);
+		SDL_Color render_color;
+		set_color_zbuf(line, render_color);
+		SDL_SetRenderDrawColor(renderer, render_color.r, render_color.g, render_color.b, render_color.a);
+
+		SDL_RenderDrawLine(renderer, line.col(0).x(), SCREEN_HEIGHT - line.col(0).y(), line.col(1).x(), SCREEN_HEIGHT - line.col(1).y());
 	}
 	// Present the render, otherwise what has been drawn will not be seen
 	SDL_RenderPresent(renderer);
