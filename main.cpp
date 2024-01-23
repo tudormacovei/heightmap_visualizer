@@ -14,11 +14,11 @@ const int SCREEN_HEIGHT = 600;
 // We store lines as 3x2 matrices (two 3D points)
 typedef Eigen::Matrix<float, 3, 2> Line3f;
 
-// view direction of camera
-Eigen::Vector3f camera_position(10.0f, 10.0f, 10.0f);
+Eigen::Vector3f camera_position(1.0f, 1.0f, 1.0f);
+
+float perspective_factor = camera_position.norm();
 
 void to_pixel_coordinates(std::vector<Line3f> &lines) {
-	float scale_factor = 10.0f;
 	for (Line3f& line : lines) {
 		// TODO move this
 		// center the plane on 0
@@ -59,7 +59,13 @@ void to_pixel_coordinates(std::vector<Line3f> &lines) {
 		line.col(1) -= camera_position;
 		line = view_matrix * line;
 		
-		float zoom_factor = 400.0f;
+		// perspective division
+		if (line.col(0).z() < -1)
+			line.col(0) *= perspective_factor / abs(line.col(0).z());
+		if (line.col(1).z() < -1)
+			line.col(1) *= perspective_factor / abs(line.col(1).z());
+
+		float zoom_factor = 500.0f;
 		line *= zoom_factor;
 
 		// transform to pixel coordinates here
@@ -68,12 +74,6 @@ void to_pixel_coordinates(std::vector<Line3f> &lines) {
 
 		line.col(0).x() += SCREEN_WIDTH / 2.0f;
 		line.col(1).x() += SCREEN_WIDTH / 2.0f;
-		
-		// perspective division
-		//if (line.col(0).z() < -1)
-		//	line.col(0) /= abs(line.col(0).z() / 100.0f);
-		//if (line.col(1).z() < -1)
-		//	line.col(1) /= abs(line.col(1).z() / 100.0f);
 	}
 }
 
@@ -115,44 +115,23 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 	}
 }
 
-// sets color based on z-depth
-void set_color_zbuf(float z_depth, SDL_Color& color) {
-	// the two distances to interpolate between
-	float mini = 17.1f;
-	float maxi = 18.5;
-	int abs_distance = std::min(((std::max(mini, abs(z_depth)) - mini) / (maxi - mini)), 1.0f) * 255.0f;
-	
-	int sign = (z_depth < 0) ? 255.0f : 0.0f;
-	
-	color.a = 255 - abs_distance;
-	color.r = 255 - abs_distance;
-	color.g = 255 - abs_distance;
-	color.b = 255 - abs_distance;
-	
-}
-
 // TODO find a more efficient way of doing this than making a copy of the lines data structure
 void draw_heightmap(SDL_Renderer *renderer, std::vector<Line3f> lines) {
-	// We render with a color of choice at a time		
-	
+	// We render with a color of choice at a time			
 	SDL_SetRenderDrawColor(renderer, 0x5F, 0x00, 0x00, 0xFF); // red background
 	SDL_RenderClear(renderer);
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BlendMode::SDL_BLENDMODE_BLEND);
-
-	SDL_SetRenderDrawColor(renderer, 0x0F, 0xFF, 0xFF, 0xAF);
+	SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xAF);
 	
 	to_pixel_coordinates(lines);
 	
 	for (const Line3f &line : lines)
 	{
-		assert(line.col(0).x() > 0);
-		assert(line.col(0).x() < SCREEN_WIDTH + 1);
-		SDL_Color render_color;
+		// assert(line.col(0).x() > 0);
+		// assert(line.col(0).x() < SCREEN_WIDTH + 1);
+		// SDL_Color render_color;
 
-		// divide by the scaling done in to_pixel coords
-		// now the z-coord is in view coordinates (unscaled)
-		set_color_zbuf(line.col(0).z() / 400.0f, render_color);
-		SDL_SetRenderDrawColor(renderer, render_color.r, render_color.g, render_color.b, render_color.a);
+		// SDL_SetRenderDrawColor(renderer, render_color.r, render_color.g, render_color.b, render_color.a);
 
 		SDL_RenderDrawLine(renderer, line.col(0).x(), SCREEN_HEIGHT - line.col(0).y(), line.col(1).x(), SCREEN_HEIGHT - line.col(1).y());
 	}
@@ -203,6 +182,14 @@ void game_loop(SDL_Renderer* renderer, int** heightmap, int width, int height) {
 					camera_position = Eigen::AngleAxisf(-0.1 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
 					break;
 
+				case SDLK_RIGHTBRACKET:
+					perspective_factor += 0.1;
+					break;
+
+				case SDLK_LEFTBRACKET:
+					perspective_factor -= 0.1;
+					break;
+
 				default:
 					// error if a diff key is pressed to check behaviour
 					assert(false);
@@ -230,10 +217,6 @@ int main(int argc, char* args[])
 		return -1;
 	}
 
-	//the pixels are now in the vector "image", 4 bytes per pixel, ordered RGBARGBA..., use it as texture, draw it, ...
-
-	// Get image dimensions
-
 	// Create a 2D array to store pixel values
 	int** pixelValues = new int* [height];
 	for (int i = 0; i < height; ++i) {
@@ -243,16 +226,13 @@ int main(int argc, char* args[])
 	// Copy pixel values to the array
 	for (int i = 0; i < height; ++i) {
 		for (int j = 0; j < width; ++j) {
-			pixelValues[i][j] = static_cast<int>(image[(i * height + j) * 4]);
+			// 4 bytes per pixel (RGBA), we poll the R byte
+			pixelValues[i][j] = static_cast<int>(image[(i * height + j) * 4]); 
 		}
 	}
-	// Now Use the pixelValues array as needed
 
 	// The window we'll be rendering to
 	SDL_Window* window = NULL;
-
-	// The surface contained by the window
-	SDL_Surface* screenSurface = NULL;
 
 	// Initialize SDL
 	if (SDL_Init(SDL_INIT_VIDEO) < 0)
@@ -269,22 +249,18 @@ int main(int argc, char* args[])
 		}
 		else
 		{
-			// TODO error handle this maybe
-			SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, 0);
-
+			SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED); // TODO error handle this maybe
 			game_loop(renderer, pixelValues, width, height);
 		}
 	}
 
-	// TODO handle the lines below somewhere else
 	// Destroy window
 	SDL_DestroyWindow(window);
 
 	// Quit SDL subsystems
 	SDL_Quit();
 
-
-	// Don't forget to free the allocated memory
+	// Don't forget to free memory
 	for (int i = 0; i < height; ++i) {
 		delete[] pixelValues[i];
 	}
