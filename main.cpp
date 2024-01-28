@@ -14,28 +14,53 @@ const int SCREEN_HEIGHT = 600;
 // We store lines as 3x2 matrices (two 3D points)
 typedef Eigen::Matrix<float, 3, 2> Line3f;
 
-typedef struct s_triangle {
+typedef struct s_vertex3d {
 	Eigen::Vector3f position;
+	Eigen::Vector3f normal;
 	SDL_Color color;
 } t_vertex3d;
 
-Eigen::Vector3f camera_position(1.0f, 1.0f, 1.0f);
+Eigen::Vector3f camera_position(0.1f, 0.1f, 3.0f);
 
 float perspective_factor = camera_position.norm();
 
 // sunlight simulation
 Eigen::Vector3f light_direction(0.0f, 0.0f, -1.0f); // pointing straight down
 
-void compute_color(t_vertex3d& v1, t_vertex3d& v2, t_vertex3d& v3) {
-	Eigen::Vector3f side1 = v1.position - v2.position;
-	Eigen::Vector3f side2 = v1.position - v3.position;
-	side1.normalize();
-	side2.normalize();
-	Eigen::Vector3f normal = side1.cross(side2);
+void compute_color(t_vertex3d& v) {
+	int val = abs(v.normal.dot(light_direction)) * 255;
+	
+	// TOOD
+	// SDL_Color color{ v.normal.x() * 255 , v.normal.y() * 255 , v.normal.z() * 255, 0xAF };
+	SDL_Color color{ val , val , val , 0xAF };
+	v.color = color;
+}
+
+void get_heightmap_normal(int** heightmap, int i, int j, int height, int width, Eigen::Vector3f &normal) {
+	int num_normals = 0;
+	normal.x() = normal.y() = normal.z() = 0;
+	// normal of line above
+	float delta_vertical { 0.0f };
+	float delta_horizontal { 0.0f };
+	float current = heightmap[i][j] / 255.0f;
+	
+	if (i - 1 >= 0) // up
+		delta_vertical += current - heightmap[i - 1][j] / 255.0f;
+	if (i + 1 < height) // down
+		delta_vertical += heightmap[i + 1][j] / 255.0f - current;
+	if (j - 1 >= 0) // left
+		delta_horizontal += heightmap[i][j - 1] / 255.0f - current;
+	if (i + 1 < width) // right
+		delta_horizontal += current - heightmap[i][j + 1] / 255.0f;
+
+	// TODO can probably be mathematically simplified
+	// create tangent space vectors so we can compute normal of vertex
+	// note that each vertex corresponds to one pixel in the given heightmap
+	Eigen::Vector3f tangent_vertical(2.0f / height, 0.0f, delta_vertical);
+	Eigen::Vector3f tangent_horizontal(0.0f, 2.0f / width, delta_horizontal);
+
+	normal = tangent_vertical.cross(tangent_horizontal);
 	normal.normalize();
-	int val = abs(normal.dot(light_direction)) * 255;
-	SDL_Color color{ val, val, val, val };
-	v1.color = v2.color = v3.color = color;
 }
 
 // list of triangles (vertices are rendered in sequential order)
@@ -45,12 +70,11 @@ void tris_from_heightmap(int** heightmap, int width, int height, std::vector<t_v
 		for (int j = 1; j < width; j++)
 		{
 			float z_fact = 0.2f;
-			float z_trans = 0.0f;
 
-			Eigen::Vector3f pos1(i - 1.0f, j - 1.0f, z_fact * heightmap[i - 1][j - 1] / 255.0f + z_trans);
-			Eigen::Vector3f pos2(i - 1.0f, j, z_fact * heightmap[i - 1][j] / 255.0f + z_trans);
-			Eigen::Vector3f pos3(i, j - 1.0f, z_fact * heightmap[i][j - 1] / 255.0f + z_trans);
-			Eigen::Vector3f pos4(i, j, z_fact * heightmap[i][j] / 255.0f + z_trans);
+			Eigen::Vector3f pos1(i - 1.0f, j - 1.0f, z_fact * heightmap[i - 1][j - 1] / 255.0f);
+			Eigen::Vector3f pos2(i - 1.0f, j, z_fact * heightmap[i - 1][j] / 255.0f);
+			Eigen::Vector3f pos3(i, j - 1.0f, z_fact * heightmap[i][j - 1] / 255.0f);
+			Eigen::Vector3f pos4(i, j, z_fact * heightmap[i][j] / 255.0f);
 			
 			t_vertex3d v1;
 			t_vertex3d v2;
@@ -61,27 +85,35 @@ void tris_from_heightmap(int** heightmap, int width, int height, std::vector<t_v
 			v1.position << pos1;
 			v1.position.x() /= height;
 			v1.position.y() /= width;
+			// compute normal of v1
+			get_heightmap_normal(heightmap, i - 1, j - 1, height, width, v1.normal);
 			
 			v2.position << pos2;
 			v2.position.x() /= height;
 			v2.position.y() /= width;
+			get_heightmap_normal(heightmap, i - 1, j, height, width, v2.normal);
 
 			v3.position << pos3;
 			v3.position.x() /= height;
 			v3.position.y() /= width;
+			get_heightmap_normal(heightmap, i, j - 1, height, width, v3.normal);
 
 			v4.position << pos4;
 			v4.position.x() /= height;
 			v4.position.y() /= width;
+			get_heightmap_normal(heightmap, i, j, height, width, v4.normal);
 			
+			compute_color(v1);
+			compute_color(v2);
+			compute_color(v3);
+			compute_color(v4);
+
 			// triangle 1
-			compute_color(v1, v2, v3);
 			triangle_points.push_back(v1);
 			triangle_points.push_back(v2);
 			triangle_points.push_back(v3);
 
 			// triangle 2
-			compute_color(v2, v3, v4);
 			triangle_points.push_back(v2);
 			triangle_points.push_back(v3);
 			triangle_points.push_back(v4);
@@ -154,7 +186,7 @@ void to_pixel_coordinates_lines(std::vector<Line3f> &lines) {
 	Eigen::Vector3f camera_look_at = camera_position - focus_point ;
 	camera_look_at.normalize();
 	
-	Eigen::Vector3f camera_up(0.0f, 0.0f, 1.0f);
+	Eigen::Vector3f camera_up(0.0f, 1.0f, 0.0f);
 	
 	Eigen::Vector3f camera_right = camera_up.cross(camera_look_at);
 	camera_right.normalize();
@@ -206,13 +238,12 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 		for (int j = 0; j < width; j++)
 		{
 			float z_fact = 0.2f;
-			float z_trans = 0.0f;
 			
-			Eigen::Vector3f current(i, j, z_fact * heightmap[i][j] / 255.0f + z_trans);
+			Eigen::Vector3f current(i, j, z_fact * heightmap[i][j] / 255.0f);
 
 			if (i > 0)
 			{
-				Eigen::Vector3f up(i - 1.0f, j, z_fact* heightmap[i - 1][j] / 255.0f + z_trans);
+				Eigen::Vector3f up(i - 1.0f, j, z_fact* heightmap[i - 1][j] / 255.0f);
 				Line3f temp;
 				temp << current, up;
 				temp.col(0).x() /= height;
@@ -223,7 +254,7 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 			}
 			if (j > 0)
 			{
-				Eigen::Vector3f left(i, j - 1.0f, z_fact* heightmap[i][j - 1] / 255.0f + z_trans);
+				Eigen::Vector3f left(i, j - 1.0f, z_fact* heightmap[i][j - 1] / 255.0f);
 				Line3f temp;
 				temp << current, left;
 				temp.col(0).x() /= height;
@@ -240,7 +271,7 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 // TODO this still makes a copy per call
 void draw_heightmap(SDL_Renderer* renderer, std::vector<t_vertex3d> verticies) {
 	// We render with a color of choice at a time			
-	SDL_SetRenderDrawColor(renderer, 0x5F, 0x00, 0x00, 0xFF); // red background
+	SDL_SetRenderDrawColor(renderer, 0xC0, 0xC0, 0xC0, 0xFF); // white background
 	SDL_RenderClear(renderer);
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BlendMode::SDL_BLENDMODE_BLEND);
 	SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xAF);
@@ -249,13 +280,15 @@ void draw_heightmap(SDL_Renderer* renderer, std::vector<t_vertex3d> verticies) {
 
 	std::vector<SDL_Vertex> sdl_verticies;
 
-	for (const t_vertex3d& v : verticies)
+	for (t_vertex3d& v : verticies)
 	{
 		SDL_Vertex temp;
-		SDL_Color color{ 0xFF, 0xFF, 0xFF, 0xAF };
 
 		temp.position.x = v.position.x();
 		temp.position.y = SCREEN_HEIGHT - v.position.y();
+		
+		// recompute shading 
+		compute_color(v);
 		temp.color = v.color; 
 		// temp.color = color;
 
@@ -315,19 +348,19 @@ void game_loop(SDL_Renderer* renderer, int** heightmap, int width, int height) {
 				switch (e.key.keysym.sym)
 				{
 				case SDLK_UP:
-					camera_position = Eigen::AngleAxisf(0.1 * M_PI, up_down_axis) * camera_position;
+					camera_position = Eigen::AngleAxisf(0.05 * M_PI, up_down_axis) * camera_position;
 					break;
 
 				case SDLK_DOWN:
-					camera_position = Eigen::AngleAxisf(-0.1 * M_PI, up_down_axis) * camera_position;
+					camera_position = Eigen::AngleAxisf(-0.05 * M_PI, up_down_axis) * camera_position;
 					break;
 
 				case SDLK_LEFT:
-					camera_position = Eigen::AngleAxisf(0.1 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
+					camera_position = Eigen::AngleAxisf(0.05 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
 					break;
 
 				case SDLK_RIGHT:
-					camera_position = Eigen::AngleAxisf(-0.1 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
+					camera_position = Eigen::AngleAxisf(-0.05 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
 					break;
 
 				case SDLK_RIGHTBRACKET:
@@ -336,6 +369,15 @@ void game_loop(SDL_Renderer* renderer, int** heightmap, int width, int height) {
 
 				case SDLK_LEFTBRACKET:
 					perspective_factor -= 0.1;
+					break;
+
+				// light source direction change
+				case SDLK_1:
+					light_direction = Eigen::AngleAxisf(0.05 * M_PI, Eigen::Vector3f::UnitX()) * light_direction;
+					break;
+
+				case SDLK_2:
+					light_direction = Eigen::AngleAxisf(-0.05 * M_PI, Eigen::Vector3f::UnitX()) * light_direction;
 					break;
 
 				default:
@@ -357,7 +399,7 @@ int main(int argc, char* args[])
 	unsigned width, height;
 
 	//decode
-	unsigned error = lodepng::decode(image, width, height, "heightmap_64.png");
+	unsigned error = lodepng::decode(image, width, height, "heightmap_128.png");
 
 	//if there's an error, display it
 	if (error) {
