@@ -30,9 +30,7 @@ Eigen::Vector3f light_direction(0.0f, 0.0f, -1.0f); // pointing straight down
 void compute_color(t_vertex3d& v) {
 	int val = abs(v.normal.dot(light_direction)) * 255;
 	
-	// TOOD
-	// SDL_Color color{ v.normal.x() * 255 , v.normal.y() * 255 , v.normal.z() * 255, 0xAF };
-	SDL_Color color{ val , val , val , 0xAF };
+	SDL_Color color{ val , val , val , 0xFF };
 	v.color = color;
 }
 
@@ -160,8 +158,9 @@ void to_pixel_coordinates_verticies(std::vector<t_vertex3d>& verticies) {
 		v.position = view_matrix * v.position;
 
 		// perspective division
-		if (v.position.z() < -1)
-			v.position *= perspective_factor / abs(v.position.z());
+		v.position.x() *= perspective_factor / abs(v.position.z());
+		v.position.y() *= perspective_factor / abs(v.position.z());
+		// !!! NOTE that we do not divide z since we need to perserve it for z-sorting 
 
 		float zoom_factor = 500.0f;
 		v.position *= zoom_factor;
@@ -268,15 +267,43 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 	}
 }
 
+typedef struct s_triangle {
+	int i; // index of first point, by convertion i+1 and i+2 are the indices of the next points
+	float depth;
+}t_triangle;
+
+// ascending sort for painter's algorithm
+bool t_triangle_sorter(t_triangle& lhs, t_triangle& rhs) {
+	return lhs.depth > rhs.depth;
+}
+
+void depth_order(const std::vector<t_vertex3d>& verticies, std::vector<int> &index_list) {
+	std::vector<t_triangle> triangles;
+	for (int i = 0; i < verticies.size(); i += 3) {
+		t_triangle temp;
+		temp.i = i;
+		temp.depth = abs(verticies[i].position.z() + verticies[i + 1].position.z() + verticies[i + 2].position.z());
+		triangles.push_back(temp);
+	}
+	std::sort(triangles.begin(), triangles.end(), &t_triangle_sorter);
+	for (int i = 0; i < verticies.size() / 3; i ++) {
+		index_list.push_back(triangles[i].i);
+		index_list.push_back(triangles[i].i + 1);
+		index_list.push_back(triangles[i].i + 2);
+	}
+}
+
 // TODO this still makes a copy per call
 void draw_heightmap(SDL_Renderer* renderer, std::vector<t_vertex3d> verticies) {
 	// We render with a color of choice at a time			
 	SDL_SetRenderDrawColor(renderer, 0xC0, 0xC0, 0xC0, 0xFF); // white background
 	SDL_RenderClear(renderer);
 	SDL_SetRenderDrawBlendMode(renderer, SDL_BlendMode::SDL_BLENDMODE_BLEND);
-	SDL_SetRenderDrawColor(renderer, 0xFF, 0xFF, 0xFF, 0xAF);
 
 	to_pixel_coordinates_verticies(verticies);
+	
+	std::vector<int> index_list;
+	depth_order(verticies, index_list);
 
 	std::vector<SDL_Vertex> sdl_verticies;
 
@@ -296,8 +323,10 @@ void draw_heightmap(SDL_Renderer* renderer, std::vector<t_vertex3d> verticies) {
 		// SDL_RenderDrawLine(renderer, line.col(0).x(), SCREEN_HEIGHT - line.col(0).y(), line.col(1).x(), SCREEN_HEIGHT - line.col(1).y());
 	}
 	// C++ std::vertex is guaranteed to store elements contiguously
-	// TODO: might be more efficient to just allocate elems contiguously
-	SDL_RenderGeometry(renderer, NULL, &(sdl_verticies[0]), verticies.size(), NULL, 0);
+	// TODO: might be more efficient to just allocate elems in a normal arraay
+	assert(verticies.size() == index_list.size());
+	//SDL_RenderGeometry(renderer, NULL, &(sdl_verticies[0]), verticies.size(), NULL, 0);
+	SDL_RenderGeometry(renderer, NULL, &(sdl_verticies[0]), verticies.size(), &(index_list[0]), index_list.size());
 	// Present the render, otherwise what has been drawn will not be seen
 	SDL_RenderPresent(renderer);
 }
