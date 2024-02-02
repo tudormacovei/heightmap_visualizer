@@ -20,7 +20,7 @@ typedef struct s_vertex3d {
 	SDL_Color color;
 } t_vertex3d;
 
-Eigen::Vector3f camera_position(0.1f, 0.1f, 3.0f);
+Eigen::Vector3f camera_position(1.0f, 1.0f, 1.0f);
 
 float perspective_factor = camera_position.norm();
 
@@ -34,7 +34,7 @@ void compute_color(t_vertex3d& v) {
 	v.color = color;
 }
 
-void get_heightmap_normal(int** heightmap, int i, int j, int height, int width, Eigen::Vector3f &normal) {
+void set_heightmap_normal(int** heightmap, int i, int j, int width, int height, Eigen::Vector3f &normal) {
 	int num_normals = 0;
 	normal.x() = normal.y() = normal.z() = 0;
 	// normal of line above
@@ -51,82 +51,53 @@ void get_heightmap_normal(int** heightmap, int i, int j, int height, int width, 
 	if (i + 1 < width) // right
 		delta_horizontal += current - heightmap[i][j + 1] / 255.0f;
 
-	// TODO can probably be mathematically simplified
 	// create tangent space vectors so we can compute normal of vertex
 	// note that each vertex corresponds to one pixel in the given heightmap
 	Eigen::Vector3f tangent_vertical(2.0f / height, 0.0f, delta_vertical);
 	Eigen::Vector3f tangent_horizontal(0.0f, 2.0f / width, delta_horizontal);
-
 	normal = tangent_vertical.cross(tangent_horizontal);
 	normal.normalize();
 }
 
-// list of triangles (vertices are rendered in sequential order)
+void initialize_vertex(int i, int j, int** heightmap, int width, int height, t_vertex3d& vertex) {
+	float z_fact = 0.2f; // TODO paramatrize this
+	Eigen::Vector3f pos(i, j, z_fact * heightmap[i][j] / 255.0f);
+	
+	vertex.position << pos;
+	vertex.position.x() = vertex.position.x() / height - 0.5f; // the substraction centers the heightmap plane on the x and y -axes
+	vertex.position.y() = vertex.position.y() / width - 0.5f;
+	
+	set_heightmap_normal(heightmap, i, j, width, height, vertex.normal);
+	compute_color(vertex);
+}
+
+// creates a strip of triangles
 void tris_from_heightmap(int** heightmap, int width, int height, std::vector<t_vertex3d>& triangle_points) {
 	for (int i = 1; i < height; i++)
 	{
 		for (int j = 1; j < width; j++)
-		{
-			float z_fact = 0.2f;
+		{			
+			t_vertex3d v[4]; // four points corresponding to the quad of the heightmap we are currently processing
 
-			Eigen::Vector3f pos1(i - 1.0f, j - 1.0f, z_fact * heightmap[i - 1][j - 1] / 255.0f);
-			Eigen::Vector3f pos2(i - 1.0f, j, z_fact * heightmap[i - 1][j] / 255.0f);
-			Eigen::Vector3f pos3(i, j - 1.0f, z_fact * heightmap[i][j - 1] / 255.0f);
-			Eigen::Vector3f pos4(i, j, z_fact * heightmap[i][j] / 255.0f);
-			
-			t_vertex3d v1;
-			t_vertex3d v2;
-			t_vertex3d v3;
-			t_vertex3d v4;
-			
-			// TODO D.R.Y.
-			v1.position << pos1;
-			v1.position.x() /= height;
-			v1.position.y() /= width;
-			// compute normal of v1
-			get_heightmap_normal(heightmap, i - 1, j - 1, height, width, v1.normal);
-			
-			v2.position << pos2;
-			v2.position.x() /= height;
-			v2.position.y() /= width;
-			get_heightmap_normal(heightmap, i - 1, j, height, width, v2.normal);
-
-			v3.position << pos3;
-			v3.position.x() /= height;
-			v3.position.y() /= width;
-			get_heightmap_normal(heightmap, i, j - 1, height, width, v3.normal);
-
-			v4.position << pos4;
-			v4.position.x() /= height;
-			v4.position.y() /= width;
-			get_heightmap_normal(heightmap, i, j, height, width, v4.normal);
-			
-			compute_color(v1);
-			compute_color(v2);
-			compute_color(v3);
-			compute_color(v4);
+			initialize_vertex(i - 1, j - 1, heightmap, width, height, v[0]);
+			initialize_vertex(i - 1, j, heightmap, width, height, v[1]);
+			initialize_vertex(i, j - 1, heightmap, width, height, v[2]);
+			initialize_vertex(i, j, heightmap, width, height, v[3]);
 
 			// triangle 1
-			triangle_points.push_back(v1);
-			triangle_points.push_back(v2);
-			triangle_points.push_back(v3);
+			triangle_points.push_back(v[0]);
+			triangle_points.push_back(v[1]);
+			triangle_points.push_back(v[2]);
 
 			// triangle 2
-			triangle_points.push_back(v2);
-			triangle_points.push_back(v3);
-			triangle_points.push_back(v4);
+			triangle_points.push_back(v[1]);
+			triangle_points.push_back(v[2]);
+			triangle_points.push_back(v[3]);
 		}
 	}
 }
 
 void to_pixel_coordinates_verticies(std::vector<t_vertex3d>& verticies) {
-	for (t_vertex3d& v : verticies) {
-		// TODO move this
-		// center the plane on 0
-		v.position.x() -= 0.5f;
-		v.position.y() -= 0.5f;
-	}
-
 	Eigen::Vector3f focus_point(0.0f, 0.0f, 0.0f);
 	Eigen::Vector3f camera_look_at = camera_position - focus_point;
 	camera_look_at.normalize();
@@ -148,11 +119,13 @@ void to_pixel_coordinates_verticies(std::vector<t_vertex3d>& verticies) {
 	// we take the transpose of it to take its inverse
 	view_matrix.transposeInPlace();
 
+	// TODO this can be just one matrix multiplication, right?
 	Eigen::Vector3f translation;
 	translation.x() = camera_position.dot(camera_right);
 	translation.y() = camera_position.dot(camera_up);
 	translation.z() = camera_position.dot(camera_look_at);
 
+	// TODO: if we do not modify the vertices but instead pass the matrix on, we could get rid of this expensive copy
 	for (t_vertex3d& v : verticies) {
 		v.position -= camera_position;
 		v.position = view_matrix * v.position;
@@ -160,7 +133,7 @@ void to_pixel_coordinates_verticies(std::vector<t_vertex3d>& verticies) {
 		// perspective division
 		v.position.x() *= perspective_factor / abs(v.position.z());
 		v.position.y() *= perspective_factor / abs(v.position.z());
-		// !!! NOTE that we do not divide z since we need to perserve it for z-sorting 
+		// !!! NOTE that we do not divide the z-coordinate since we need to perserve it for visible surface detection
 
 		float zoom_factor = 500.0f;
 		v.position *= zoom_factor;
@@ -171,18 +144,9 @@ void to_pixel_coordinates_verticies(std::vector<t_vertex3d>& verticies) {
 	}
 }
 
-void to_pixel_coordinates_lines(std::vector<Line3f> &lines) {
-	for (Line3f& line : lines) {
-		// TODO move this
-		// center the plane on 0
-		line.col(0).x() -= 0.5f;
-		line.col(1).x() -= 0.5f;
-		line.col(0).y() -= 0.5f;
-		line.col(1).y() -= 0.5f;
-	}
-	
+void to_pixel_coordinates_lines(std::vector<Line3f> &lines) {	
 	Eigen::Vector3f focus_point(0.0f, 0.0f, 0.0f);
-	Eigen::Vector3f camera_look_at = camera_position - focus_point ;
+	Eigen::Vector3f camera_look_at = camera_position - focus_point;
 	camera_look_at.normalize();
 	
 	Eigen::Vector3f camera_up(0.0f, 1.0f, 0.0f);
@@ -240,15 +204,14 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 			
 			Eigen::Vector3f current(i, j, z_fact * heightmap[i][j] / 255.0f);
 
+			// TODO D.R.Y. or copy setup from tris
 			if (i > 0)
 			{
 				Eigen::Vector3f up(i - 1.0f, j, z_fact* heightmap[i - 1][j] / 255.0f);
 				Line3f temp;
 				temp << current, up;
-				temp.col(0).x() /= height;
-				temp.col(1).x() /= height;
-				temp.col(0).y() /= width;
-				temp.col(1).y() /= width;
+				temp.row(0) /= height;
+				temp.row(1) /= width;
 				lines.push_back(temp);
 			}
 			if (j > 0)
@@ -256,10 +219,8 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 				Eigen::Vector3f left(i, j - 1.0f, z_fact* heightmap[i][j - 1] / 255.0f);
 				Line3f temp;
 				temp << current, left;
-				temp.col(0).x() /= height;
-				temp.col(1).x() /= height;
-				temp.col(0).y() /= width;
-				temp.col(1).y() /= width;
+				temp.row(0) /= height;
+				temp.row(1) /= width;
 				lines.push_back(temp);
 			}
 
@@ -267,6 +228,7 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 	}
 }
 
+// this data structure is used to keep track of indices of SDL_triangles we want to render
 typedef struct s_triangle {
 	int i; // index of first point, by convertion i+1 and i+2 are the indices of the next points
 	float depth;
@@ -303,35 +265,32 @@ void draw_heightmap(SDL_Renderer* renderer, std::vector<t_vertex3d> verticies) {
 	to_pixel_coordinates_verticies(verticies);
 	
 	std::vector<int> index_list;
-	depth_order(verticies, index_list);
+	depth_order(verticies, index_list); // index_list provides the order in which the triangles should be rendered
 
 	std::vector<SDL_Vertex> sdl_verticies;
 
 	for (t_vertex3d& v : verticies)
 	{
+		// SDL vertices are 2D, so that is why I created my own data struct
 		SDL_Vertex temp;
-
+		
 		temp.position.x = v.position.x();
 		temp.position.y = SCREEN_HEIGHT - v.position.y();
 		
 		// recompute shading 
 		compute_color(v);
 		temp.color = v.color; 
-		// temp.color = color;
 
 		sdl_verticies.push_back(temp);
-		// SDL_RenderDrawLine(renderer, line.col(0).x(), SCREEN_HEIGHT - line.col(0).y(), line.col(1).x(), SCREEN_HEIGHT - line.col(1).y());
 	}
-	// C++ std::vertex is guaranteed to store elements contiguously
-	// TODO: might be more efficient to just allocate elems in a normal arraay
-	assert(verticies.size() == index_list.size());
-	//SDL_RenderGeometry(renderer, NULL, &(sdl_verticies[0]), verticies.size(), NULL, 0);
+
 	SDL_RenderGeometry(renderer, NULL, &(sdl_verticies[0]), verticies.size(), &(index_list[0]), index_list.size());
-	// Present the render, otherwise what has been drawn will not be seen
-	SDL_RenderPresent(renderer);
+	
+	SDL_RenderPresent(renderer); // Present the render, otherwise what has been drawn will not be seen
 }
 
 // TODO find a more efficient way of doing this than making a copy of the lines data structure
+// TODO: just make a new transform matrix every time?
 void draw_heightmap(SDL_Renderer *renderer, std::vector<Line3f> lines) {
 	// We render with a color of choice at a time			
 	SDL_SetRenderDrawColor(renderer, 0x5F, 0x00, 0x00, 0xFF); // red background
@@ -377,27 +336,29 @@ void game_loop(SDL_Renderer* renderer, int** heightmap, int width, int height) {
 				switch (e.key.keysym.sym)
 				{
 				case SDLK_UP:
-					camera_position = Eigen::AngleAxisf(0.05 * M_PI, up_down_axis) * camera_position;
+					camera_position = Eigen::AngleAxisf(0.01 * M_PI, up_down_axis) * camera_position;
 					break;
 
 				case SDLK_DOWN:
-					camera_position = Eigen::AngleAxisf(-0.05 * M_PI, up_down_axis) * camera_position;
+					camera_position = Eigen::AngleAxisf(-0.01 * M_PI, up_down_axis) * camera_position;
 					break;
 
 				case SDLK_LEFT:
-					camera_position = Eigen::AngleAxisf(0.05 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
+					camera_position = Eigen::AngleAxisf(0.01 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
 					break;
 
 				case SDLK_RIGHT:
-					camera_position = Eigen::AngleAxisf(-0.05 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
+					camera_position = Eigen::AngleAxisf(-0.01 * M_PI, Eigen::Vector3f::UnitZ()) * camera_position;
 					break;
 
 				case SDLK_RIGHTBRACKET:
-					perspective_factor += 0.1;
+					camera_position *= 1.1;
+					perspective_factor = camera_position.norm();
 					break;
 
 				case SDLK_LEFTBRACKET:
-					perspective_factor -= 0.1;
+					camera_position *= 0.9;
+					perspective_factor = camera_position.norm();
 					break;
 
 				// light source direction change
@@ -428,7 +389,7 @@ int main(int argc, char* args[])
 	unsigned width, height;
 
 	//decode
-	unsigned error = lodepng::decode(image, width, height, "heightmap_128.png");
+	unsigned error = lodepng::decode(image, width, height, "./test_data/heightmap_128.png");
 
 	//if there's an error, display it
 	if (error) {
