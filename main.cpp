@@ -149,7 +149,7 @@ void to_pixel_coordinates_lines(std::vector<Line3f> &lines) {
 	Eigen::Vector3f camera_look_at = camera_position - focus_point;
 	camera_look_at.normalize();
 	
-	Eigen::Vector3f camera_up(0.0f, 1.0f, 0.0f);
+	Eigen::Vector3f camera_up(0.0f, 0.0f, 1.0f);
 	
 	Eigen::Vector3f camera_right = camera_up.cross(camera_look_at);
 	camera_right.normalize();
@@ -177,9 +177,9 @@ void to_pixel_coordinates_lines(std::vector<Line3f> &lines) {
 		line = view_matrix * line;
 		
 		// perspective division
-		if (line.col(0).z() < -1)
+		// if (line.col(0).z() < -1)
 			line.col(0) *= perspective_factor / abs(line.col(0).z());
-		if (line.col(1).z() < -1)
+		// if (line.col(1).z() < -1)
 			line.col(1) *= perspective_factor / abs(line.col(1).z());
 
 		float zoom_factor = 500.0f;
@@ -195,19 +195,19 @@ void to_pixel_coordinates_lines(std::vector<Line3f> &lines) {
 }
 
 void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Line3f> &lines) {
-	// heightmap will displace a unit rectangle with corners at (0,0,0) and (1, 1, 0)
+	// heightmap will displace a unit rectangle with corners at (-0.5,-0.5,0) and (0.5, 0.5, 0)
 	for (int i = 0; i < height; i++)
 	{
 		for (int j = 0; j < width; j++)
 		{
 			float z_fact = 0.2f;
 			
-			Eigen::Vector3f current(i, j, z_fact * heightmap[i][j] / 255.0f);
+			Eigen::Vector3f current(i - (height/2), j - (width/2), z_fact * heightmap[i][j] / 255.0f);
 
 			// TODO D.R.Y. or copy setup from tris
 			if (i > 0)
 			{
-				Eigen::Vector3f up(i - 1.0f, j, z_fact* heightmap[i - 1][j] / 255.0f);
+				Eigen::Vector3f up(i - 1.0f - (height / 2), j - (width / 2), z_fact* heightmap[i - 1][j] / 255.0f);
 				Line3f temp;
 				temp << current, up;
 				temp.row(0) /= height;
@@ -216,7 +216,7 @@ void lines_from_heightmap(int** heightmap, int width, int height, std::vector<Li
 			}
 			if (j > 0)
 			{
-				Eigen::Vector3f left(i, j - 1.0f, z_fact* heightmap[i][j - 1] / 255.0f);
+				Eigen::Vector3f left(i - (height / 2), j - 1.0f - (width / 2), z_fact* heightmap[i][j - 1] / 255.0f);
 				Line3f temp;
 				temp << current, left;
 				temp.row(0) /= height;
@@ -310,6 +310,7 @@ void draw_heightmap(SDL_Renderer *renderer, std::vector<Line3f> lines) {
 
 void game_loop(SDL_Renderer* renderer, int** heightmap, int width, int height) {
 	bool quit{ false };
+	bool wireframe_rendering{ false };
 	SDL_Event e;
 
 	// pre-processing (things that will not be updated between rendering frames)
@@ -369,6 +370,9 @@ void game_loop(SDL_Renderer* renderer, int** heightmap, int width, int height) {
 				case SDLK_2:
 					light_direction = Eigen::AngleAxisf(-0.05 * M_PI, Eigen::Vector3f::UnitX()) * light_direction;
 					break;
+				case SDLK_x:
+					wireframe_rendering = !wireframe_rendering;
+					break;
 
 				default:
 					// error if a diff key is pressed to check behaviour
@@ -376,7 +380,13 @@ void game_loop(SDL_Renderer* renderer, int** heightmap, int width, int height) {
 					break;
 				}
 				// only redraw if view changed
-				draw_heightmap(renderer, verticies);
+				if (wireframe_rendering) {
+					std::vector<Line3f> lines;
+					lines_from_heightmap(heightmap, width, height, lines);
+					draw_heightmap(renderer, lines);
+				} else {
+					draw_heightmap(renderer, verticies);
+				}
 			}
 		}
 	}
